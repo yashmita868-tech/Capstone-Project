@@ -1,0 +1,8 @@
+.env
+.venv/
+data/invoices.db
+data/chroma/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
