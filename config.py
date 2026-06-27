@@ -17,7 +17,7 @@ VLM_BACKEND = os.getenv("VLM_BACKEND", "gemini")
 # Get your free API key at: https://aistudio.google.com/app/apikey
 # No credit card required — just a Google account
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+GEMINI_MODEL   = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 # ── Anthropic Claude (Optional) ───────────────────────────────────────────────
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")

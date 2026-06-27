@@ -10,7 +10,7 @@ from langgraph.graph import END, StateGraph
 from PIL import Image
 
 from agents import correction_agent, extraction_agent, validation_agent
-from config import AUTO_APPROVE_THRESHOLD, EXTRACTION_CONF_THRESHOLD, MAX_CORRECTION_ATTEMPTS
+import config   # read at call-time so Settings changes take effect immediately
 from database import storage
 from models.schemas import ExtractionResult, ProcessingRecord, ValidationResult, ValidationStatus
 from pipeline import ingestion, ocr
@@ -149,7 +149,8 @@ def _save(state: InvoiceState, status: ValidationStatus) -> None:
     state["timings"]["total"] = total
     state["processing_notes"].append(f"⏱ Total pipeline time: {total}s")
 
-    storage.save_record(ProcessingRecord(
+    try:
+      storage.save_record(ProcessingRecord(
         document_id=state["document_id"],
         source_path=state["source_path"],
         doc_type=ext.extracted_data.doc_type if ext else "unknown",
@@ -174,7 +175,10 @@ def _save(state: InvoiceState, status: ValidationStatus) -> None:
         validation_status=status,
         extraction_confidence=ext.confidence if ext else 0.0,
         processing_notes=state["processing_notes"],
-    ))
+      ))
+    except Exception as e:
+        print(f"[workflow] ERROR: could not save record {state['document_id']}: {e}")
+        raise   # re-raise so the pipeline surface the failure visibly
 
 
 def node_store(state: InvoiceState) -> InvoiceState:
@@ -201,7 +205,7 @@ def node_review_queue(state: InvoiceState) -> InvoiceState:
 
 def _should_run_ocr(state: InvoiceState) -> str:
     conf = state["extraction"].confidence if state["extraction"] else 0.0
-    return "ocr_fallback" if conf < EXTRACTION_CONF_THRESHOLD else "validate"
+    return "ocr_fallback" if conf < config.EXTRACTION_CONF_THRESHOLD else "validate"
 
 
 def _route_after_validation(state: InvoiceState) -> str:
@@ -209,11 +213,11 @@ def _route_after_validation(state: InvoiceState) -> str:
     conf = state["extraction"].confidence if state["extraction"] else 0.0
 
     if v and not v.is_valid:
-        if state["correction_attempts"] < MAX_CORRECTION_ATTEMPTS:
+        if state["correction_attempts"] < config.MAX_CORRECTION_ATTEMPTS:
             return "correct"
         return "review_queue"
 
-    return "store" if conf >= AUTO_APPROVE_THRESHOLD else "review_queue"
+    return "store" if conf >= config.AUTO_APPROVE_THRESHOLD else "review_queue"
 
 
 # ── Build & run ───────────────────────────────────────────────────────────────

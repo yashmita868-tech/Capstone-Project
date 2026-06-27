@@ -19,31 +19,42 @@ Your task:
 1. Identify the document type
 2. Extract EVERY piece of information visible in the document — be exhaustive
 
-Return ONLY valid JSON in this exact structure (no markdown fences, no explanation):
+Return ONLY a valid JSON object (no markdown fences, no explanation, no comments).
+Use this exact structure:
+
 {{
-  "doc_type": "<invoice|receipt|purchase_order|bank_statement|expense_report|quote|delivery_note|contract|form|other>",
-  "doc_subtype": "<optional: e.g. tax_invoice, pro_forma, credit_note, utility_bill>",
-  "confidence": <0.0 to 1.0>,
+  "doc_type": "invoice",
+  "doc_subtype": "tax_invoice",
+  "confidence": 0.95,
   "fields": {{
-    // Include EVERY field you can read from the document
-    // Use clear snake_case keys, e.g.:
-    //   vendor_name, invoice_number, invoice_date, due_date,
-    //   billing_address, shipping_address, phone, email,
-    //   subtotal, tax_rate, tax_amount, discount, total_amount,
-    //   currency, payment_terms, iban, account_number, bank_name,
-    //   purchase_order_number, customer_name, customer_id, notes
-    // Dates → YYYY-MM-DD format
-    // Amounts → plain numbers without currency symbols
-    // Use null only for fields clearly present but unreadable
-    // Do NOT include fields that don't exist in this document
+    "vendor_name": "Acme Corp",
+    "invoice_number": "INV-001",
+    "invoice_date": "2024-01-15",
+    "due_date": "2024-02-15",
+    "customer_name": "John Doe",
+    "billing_address": "123 Main St",
+    "subtotal": 1000.00,
+    "tax_rate": 18,
+    "tax_amount": 180.00,
+    "total_amount": 1180.00,
+    "currency": "INR",
+    "payment_terms": "Net 30",
+    "gstin": "27AABCU9603R1ZX"
   }},
   "line_items": [
-    // Every row from any table (products, services, transactions)
-    // Include ALL columns that appear in the table
-    // E.g.: {{"description": "...", "quantity": 1, "unit_price": 100.00, "total": 100.00}}
+    {{"description": "Product A", "quantity": 2, "unit_price": 500.00, "total": 1000.00}}
   ],
-  "extraction_notes": "<one sentence: what type of document and key facts found>"
+  "extraction_notes": "Tax invoice from Acme Corp for Product A"
 }}
+
+Rules:
+- doc_type must be one of: invoice, receipt, purchase_order, bank_statement, expense_report, quote, delivery_note, contract, form, other
+- Include EVERY field visible in the document using snake_case keys
+- Dates must be in YYYY-MM-DD format
+- Amounts must be plain numbers without currency symbols
+- Use null only for fields present but unreadable
+- Do NOT include fields that do not exist in this document
+- line_items must include every row from every table in the document
 
 OCR TEXT (use as reference if image is unclear):
 {ocr_text}"""
@@ -80,7 +91,7 @@ def _extract_with_gemini(images: List[Image.Image], ocr_text: str) -> Extraction
                 model=GEMINI_MODEL,
                 contents=[*images, prompt],
                 config=types.GenerateContentConfig(
-                    max_output_tokens=2048,
+                    max_output_tokens=16384,
                     temperature=0.1,
                 ),
             )
@@ -93,7 +104,17 @@ def _extract_with_gemini(images: List[Image.Image], ocr_text: str) -> Extraction
                 raise e
 
             time.sleep(20)
-    return _build_result(ocr_text, response.text)
+
+    # Safely extract text — response.text raises ValueError when content is blocked
+    try:
+        raw_text = response.text or ""
+    except Exception as e:
+        print(f"[extraction_agent] response.text inaccessible: {e}")
+        print(f"[extraction_agent] Full response object: {response}")
+        raw_text = ""
+
+    print(f"[extraction_agent] Gemini raw response ({len(raw_text)} chars):\n{raw_text[:2000]}")
+    return _build_result(ocr_text, raw_text)
 
 
 # ── Claude ────────────────────────────────────────────────────────────────────
@@ -103,13 +124,13 @@ def _extract_with_claude(images: List[Image.Image], ocr_text: str) -> Extraction
     from utils.image_processing import image_to_base64
 
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    prompt = _PROMPT.format(ocr_text=ocr_text[:4000])
     encoded_images = [
         image_to_base64(img, fmt="PNG")
         for img in images
     ]
-    
+
     content = []
-    
     for b64 in encoded_images:
         content.append(
             {
@@ -121,16 +142,7 @@ def _extract_with_claude(images: List[Image.Image], ocr_text: str) -> Extraction
                 },
             }
         )
-        
-    content.append(
-        {
-            "type": "text",
-            "text": prompt,
-        }
-    
-    )
-    
-    prompt = _PROMPT.format(ocr_text=ocr_text[:4000])
+    content.append({"type": "text", "text": prompt})
 
     msg = client.messages.create(
         model = CLAUDE_MODEL,
@@ -273,23 +285,128 @@ def _build_result(ocr_text: str, raw: str) -> ExtractionResult:
     )
 
 
+def _close_truncated_json(partial: str) -> str:
+    """Close a truncated JSON string that starts with '{' but has no closing braces.
+
+    Uses character-level parsing to correctly track string context (so braces
+    inside string values are not miscounted), then appends the missing closing
+    brackets/braces to produce valid JSON.
+    """
+    result      = []
+    in_string   = False
+    escape_next = False
+    depth_stack = []   # stack of expected closing chars: '}' or ']'
+
+    for ch in partial:
+        result.append(ch)
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\" and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth_stack.append("}")
+        elif ch == "[":
+            depth_stack.append("]")
+        elif ch in "}]":
+            if depth_stack and depth_stack[-1] == ch:
+                depth_stack.pop()
+
+    # Close any open string value
+    if in_string:
+        result.append('"')
+
+    # Strip trailing comma before we close (invalid JSON at end of object/array)
+    text = "".join(result).rstrip()
+    if text and text[-1] == ",":
+        text = text[:-1]
+
+    # Close remaining open structures in reverse order
+    text += "".join(reversed(depth_stack))
+    return text
+
+
+def _sanitise_json_strings(text: str) -> str:
+    """Escape raw newlines and tabs inside JSON string values.
+
+    Gemini sometimes embeds literal newlines inside strings (e.g. multi-line
+    addresses) which are invalid JSON.  This walks the character stream and
+    replaces bare \\n/\\t/\\r inside quoted strings with their escape sequences.
+    """
+    result = []
+    in_string = False
+    escape_next = False
+    for ch in text:
+        if escape_next:
+            result.append(ch)
+            escape_next = False
+        elif ch == "\\":
+            result.append(ch)
+            escape_next = True
+        elif ch == '"':
+            result.append(ch)
+            in_string = not in_string
+        elif in_string and ch == "\n":
+            result.append("\\n")
+        elif in_string and ch == "\r":
+            result.append("\\r")
+        elif in_string and ch == "\t":
+            result.append("\\t")
+        else:
+            result.append(ch)
+    return "".join(result)
+
+
 def _parse_response(text: str) -> Tuple[DocumentData, float]:
-    # Strip markdown code fences if present
-    text = re.sub(r"```(?:json)?", "", text).strip()
-    match = re.search(r"\{[\s\S]*\}", text)
-    if not match:
+    if not text or not text.strip():
+        print("[extraction_agent] VLM returned empty response")
         return DocumentData(), 0.0
+
+    # Strip markdown code fences (opening and closing)
+    text = re.sub(r"```(?:json)?", "", text).strip()
+    text = re.sub(r"```", "", text).strip()
+
+    # ── Step 1: locate the JSON object ───────────────────────────────────────
+    match    = re.search(r"\{[\s\S]*\}", text)
+    open_pos = text.find("{")
+
+    if match:
+        raw_json = match.group()
+    elif open_pos != -1:
+        # Truncated response — try to close the partial JSON
+        print("[extraction_agent] Truncated JSON detected — attempting recovery.")
+        raw_json = _close_truncated_json(text[open_pos:])
+    else:
+        print(f"[extraction_agent] No JSON found in VLM response.\nResponse: {text[:800]}")
+        return DocumentData(), 0.0
+
+    # ── Step 2: sanitise + parse ──────────────────────────────────────────────
     try:
-        obj = json.loads(match.group())
+        json_str = _sanitise_json_strings(raw_json)
+        obj      = json.loads(json_str)
+        if match is None:
+            print("[extraction_agent] Truncated JSON recovered successfully.")
+    except Exception as e:
+        print(f"[extraction_agent] JSON parse error: {e}")
+        print(f"[extraction_agent] Attempted to parse: {raw_json[:500]}")
+        return DocumentData(), 0.0
 
-        doc_type  = str(obj.get("doc_type", "unknown")).lower().replace(" ", "_")
-        subtype   = obj.get("doc_subtype")
-        raw_conf  = float(obj.get("confidence", 0.5))
-        fields    = obj.get("fields") or {}
-        items     = obj.get("line_items") or []
-        notes     = obj.get("extraction_notes", "")
+    # ── Step 3: build DocumentData ────────────────────────────────────────────
+    try:
+        doc_type = str(obj.get("doc_type", "unknown")).lower().replace(" ", "_")
+        subtype  = obj.get("doc_subtype")
+        raw_conf = float(obj.get("confidence", 0.5))
+        fields   = obj.get("fields") or {}
+        items    = obj.get("line_items") or []
+        notes    = obj.get("extraction_notes", "")
 
-        # Normalise field values — strip currency symbols from amounts
+        # Normalise field values — strip surrounding whitespace, drop empty strings
         clean_fields: dict = {}
         for k, v in fields.items():
             if isinstance(v, str):
@@ -298,7 +415,7 @@ def _parse_response(text: str) -> Tuple[DocumentData, float]:
             else:
                 clean_fields[k] = v
 
-        # Confidence = VLM confidence weighted by how many fields were found
+        # Confidence = VLM-reported confidence weighted by field coverage
         field_score = min(len([v for v in clean_fields.values() if v is not None]) / 8, 1.0)
         confidence  = round((raw_conf * 0.7) + (field_score * 0.3), 2)
 
@@ -310,5 +427,6 @@ def _parse_response(text: str) -> Tuple[DocumentData, float]:
             extraction_notes=notes,
         ), confidence
 
-    except Exception:
+    except Exception as e:
+        print(f"[extraction_agent] Field extraction error: {e}")
         return DocumentData(), 0.0

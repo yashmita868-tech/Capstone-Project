@@ -277,35 +277,114 @@ def render() -> None:
 
     # ── Thresholds tab ────────────────────────────────────────────────────────
     with tab_thresholds:
-        st.markdown("#### Confidence Thresholds")
+
+        # ── Human Review Threshold (primary user-facing control) ──────────────
+        st.markdown("### 👁️ Human Review Threshold")
         st.markdown(
-            "- **Extraction threshold** — below this, OCR fallback runs to fill gaps  \n"
-            "- **Auto-approve threshold** — below this, document goes to Review Queue"
+            "Documents with an extraction confidence **below** this value are flagged "
+            "and sent to the **Review Queue** for a human to verify before they are stored."
         )
 
-        ext_t = st.slider("Extraction Confidence Threshold",
-                          0.0, 1.0, float(config.EXTRACTION_CONF_THRESHOLD), 0.05,
-                          format="%.2f")
-        app_t = st.slider("Auto-Approve Threshold",
-                          0.0, 1.0, float(config.AUTO_APPROVE_THRESHOLD), 0.05,
-                          format="%.2f")
-        st.markdown("#### Validation Rules")
-        tol   = st.number_input("Total Reconciliation Tolerance ($)",
-                                0.0, 1.0, float(config.TOTAL_TOLERANCE), 0.01, format="%.2f")
-        fuzz  = st.slider("Vendor Fuzzy Match Threshold (0–100)",
-                          0, 100, int(config.FUZZY_VENDOR_THRESHOLD))
-        corr  = st.number_input("Max Auto-Correction Attempts",
-                                1, 5, int(config.MAX_CORRECTION_ATTEMPTS))
+        review_pct = st.slider(
+            "Send to Human Review if confidence is below",
+            min_value=0,
+            max_value=100,
+            value=int(float(config.AUTO_APPROVE_THRESHOLD) * 100),
+            step=5,
+            format="%d%%",
+            key="thresh_review",
+            help="Drag left to auto-approve more documents; drag right to review more.",
+        )
+        app_t = review_pct / 100.0
 
-        if st.button("💾 Save Thresholds", type="primary"):
-            config.apply({
-                "EXTRACTION_CONF_THRESHOLD": ext_t,
-                "AUTO_APPROVE_THRESHOLD":    app_t,
-                "TOTAL_TOLERANCE":           tol,
-                "FUZZY_VENDOR_THRESHOLD":    fuzz,
-                "MAX_CORRECTION_ATTEMPTS":   corr,
-            })
-            st.success("✅ Thresholds saved and applied immediately.")
+        # ── Visual band ───────────────────────────────────────────────────────
+        ext_pct = int(float(config.EXTRACTION_CONF_THRESHOLD) * 100)
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            st.markdown(
+                f"""<div style="background:#fee2e2;border-radius:8px;padding:12px 16px;text-align:center">
+                    <div style="font-size:.75rem;color:#7f1d1d;font-weight:600;text-transform:uppercase;
+                                letter-spacing:.6px">OCR Fallback zone</div>
+                    <div style="font-size:1.4rem;font-weight:700;color:#dc2626">0 – {ext_pct}%</div>
+                    <div style="font-size:.75rem;color:#7f1d1d">OCR supplements VLM</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+        with col_b:
+            st.markdown(
+                f"""<div style="background:#fef3c7;border-radius:8px;padding:12px 16px;text-align:center">
+                    <div style="font-size:.75rem;color:#78350f;font-weight:600;text-transform:uppercase;
+                                letter-spacing:.6px">Human Review zone</div>
+                    <div style="font-size:1.4rem;font-weight:700;color:#d97706">{ext_pct} – {review_pct}%</div>
+                    <div style="font-size:.75rem;color:#78350f">Sent to Review Queue</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+        with col_c:
+            st.markdown(
+                f"""<div style="background:#dcfce7;border-radius:8px;padding:12px 16px;text-align:center">
+                    <div style="font-size:.75rem;color:#14532d;font-weight:600;text-transform:uppercase;
+                                letter-spacing:.6px">Auto-approve zone</div>
+                    <div style="font-size:1.4rem;font-weight:700;color:#16a34a">{review_pct} – 100%</div>
+                    <div style="font-size:.75rem;color:#14532d">Stored automatically</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+
+        st.markdown("<br/>", unsafe_allow_html=True)
+
+        # ── OCR fallback threshold ────────────────────────────────────────────
+        with st.expander("⚙️ Advanced — OCR & Validation Settings", expanded=False):
+            st.markdown(
+                "**OCR Fallback Threshold** — if extraction confidence is below this, "
+                "Tesseract OCR runs to fill any gaps the VLM missed."
+            )
+            ext_t = st.slider(
+                "OCR Fallback Threshold",
+                min_value=0, max_value=100,
+                value=ext_pct, step=5, format="%d%%",
+                key="thresh_ocr",
+                help="Keep this below the Human Review threshold.",
+            )
+            ext_t = ext_t / 100.0
+
+            st.markdown("---")
+            st.markdown("**Validation Rules**")
+            tol  = st.number_input(
+                "Total Reconciliation Tolerance ($)",
+                0.0, 1.0, float(config.TOTAL_TOLERANCE), 0.01,
+                format="%.2f", key="thresh_tol",
+                help="Max allowed difference between (subtotal + tax) and total_amount.",
+            )
+            fuzz = st.slider(
+                "Vendor Fuzzy Match Threshold (0–100)",
+                0, 100, int(config.FUZZY_VENDOR_THRESHOLD),
+                key="thresh_fuzz",
+                help="Minimum similarity score to consider a vendor name a known match.",
+            )
+            corr = st.number_input(
+                "Max Auto-Correction Attempts",
+                1, 5, int(config.MAX_CORRECTION_ATTEMPTS),
+                key="thresh_corr",
+                help="How many times the pipeline re-queries the VLM to fix failed fields.",
+            )
+        if st.button("💾 Save Thresholds", type="primary", key="save_thresholds"):
+            if ext_t >= app_t:
+                st.error(
+                    "OCR Fallback Threshold must be **lower** than the Human Review Threshold. "
+                    f"Currently: OCR={ext_t:.0%} ≥ Review={app_t:.0%}"
+                )
+            else:
+                config.apply({
+                    "EXTRACTION_CONF_THRESHOLD": ext_t,
+                    "AUTO_APPROVE_THRESHOLD":    app_t,
+                    "TOTAL_TOLERANCE":           tol,
+                    "FUZZY_VENDOR_THRESHOLD":    fuzz,
+                    "MAX_CORRECTION_ATTEMPTS":   corr,
+                })
+                st.success(
+                    f"✅ Saved — documents below **{review_pct}%** confidence will go to Review Queue."
+                )
 
     # ── Vendors tab ───────────────────────────────────────────────────────────
     with tab_vendors:

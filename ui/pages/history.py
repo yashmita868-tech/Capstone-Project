@@ -108,12 +108,14 @@ def render() -> None:
         st.download_button("⬇️ Export CSV",
             data=filtered_df.to_csv(index=False),
             file_name="doc_agent_history.csv", mime="text/csv",
-            use_container_width=True)
+            use_container_width=True,
+            key="hist_export_csv")
     with ec2:
         st.download_button("⬇️ Export JSON",
             data=filtered_df.to_json(orient="records", indent=2),
             file_name="doc_agent_history.json", mime="application/json",
-            use_container_width=True)
+            use_container_width=True,
+            key="hist_export_json")
 
     # ── Detail panel (shown when a row is selected) ───────────────────────────
     rows_sel = selected.get("selection", {}).get("rows", [])
@@ -146,21 +148,30 @@ def render() -> None:
     ])
 
     with tab_fields:
-        left, right = st.columns(2)
-        field_pairs = [
-            ("Invoice Number", "invoice_number"), ("Vendor Name",   "vendor_name"),
-            ("Invoice Date",   "invoice_date"),   ("Due Date",      "due_date"),
-            ("Payment Terms",  "payment_terms"),  ("Currency",      "currency"),
-            ("Subtotal",       "subtotal"),        ("Tax Amount",    "tax_amount"),
-            ("Total Amount",   "total_amount"),    ("IBAN",          "iban"),
-        ]
-        for i, (label, key) in enumerate(field_pairs):
-            v = final.get(key)
-            if isinstance(v, float):
-                v = f"${v:,.2f}"
-            col = left if i % 2 == 0 else right
-            col.text_input(label, value=str(v) if v is not None else "—", disabled=True,
-                           key=f"det_{record['document_id']}_{key}")
+        from ui.components.field_groups import format_value, group_fields, pretty_label
+
+        # Fields are stored under final["fields"], not at the top level
+        fields_dict = final.get("fields") or {}
+        currency    = str(fields_dict.get("currency") or "")
+
+        if not fields_dict:
+            st.info("No fields were extracted for this document.")
+        else:
+            groups = group_fields(fields_dict)
+            for group_label, group_fields_dict in groups.items():
+                st.markdown(f"**{group_label}**")
+                cols = st.columns(2)
+                for i, (fkey, fval) in enumerate(group_fields_dict.items()):
+                    cols[i % 2].text_input(
+                        pretty_label(fkey),
+                        value=format_value(fkey, fval, currency),
+                        disabled=True,
+                        key=f"hist_{record['document_id']}_{fkey}",
+                    )
+                st.markdown(
+                    "<hr style='margin:8px 0;border-color:#e2e8f0'/>",
+                    unsafe_allow_html=True,
+                )
 
         if corrections:
             st.markdown("**Auto-corrections applied:**")

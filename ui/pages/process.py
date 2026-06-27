@@ -148,7 +148,8 @@ def _show_results(result: dict) -> None:
 
     # ── Fields tab: grouped display ───────────────────────────────────────────
     with tab_fields:
-        groups = group_fields(result["fields"])
+        currency = str(result["fields"].get("currency") or "")
+        groups   = group_fields(result["fields"])
 
         if not groups:
             st.warning("No fields were extracted. Try a clearer image.")
@@ -159,7 +160,7 @@ def _show_results(result: dict) -> None:
                 for i, (key, val) in enumerate(group_fields_dict.items()):
                     cols[i % 2].text_input(
                         pretty_label(key),
-                        value=format_value(key, val),
+                        value=format_value(key, val, currency),
                         disabled=True,
                         key=f"field_{result['document_id']}_{key}",
                     )
@@ -220,6 +221,7 @@ def _show_results(result: dict) -> None:
                 file_name=f"extracted_{result['document_id'][:8]}.json",
                 mime="application/json",
                 use_container_width=True,
+                key=f"proc_dl_json_{result['document_id']}",
             )
         with c2:
             flat = {k: v for k, v in export_data.items() if not isinstance(v, list)}
@@ -229,6 +231,7 @@ def _show_results(result: dict) -> None:
                 file_name=f"extracted_{result['document_id'][:8]}.csv",
                 mime="text/csv",
                 use_container_width=True,
+                key=f"proc_dl_csv_{result['document_id']}",
             )
         if result["line_items"]:
             st.download_button(
@@ -237,6 +240,7 @@ def _show_results(result: dict) -> None:
                 file_name=f"line_items_{result['document_id'][:8]}.csv",
                 mime="text/csv",
                 use_container_width=True,
+                key=f"proc_dl_items_{result['document_id']}",
             )
 
 
@@ -288,7 +292,11 @@ def render() -> None:
                         else:
                             st.error(f"{f.name} processing failed.")
 
-                        _show_results(st.session_state.process_result)
+                        # For batch uploads show results inline here.
+                        # Single-file results are shown below (after the run block)
+                        # to avoid rendering the same widgets twice on the same page.
+                        if len(uploaded_files) > 1:
+                            _show_results(st.session_state.process_result)
 
                     except Exception as e:
                         err = str(e)

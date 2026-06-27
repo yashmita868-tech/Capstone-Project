@@ -197,14 +197,22 @@ hr {border-color: #e2e8f0 !important;}
 
 /* 1. Override any Streamlit JS that slides/hides the sidebar */
 [data-testid="stSidebar"] {
-    width:      260px   !important;
-    min-width:  260px   !important;
-    max-width:  260px   !important;
-    transform:  none    !important;   /* block translateX slide-out */
-    visibility: visible !important;
-    display:    flex    !important;
-    flex-shrink: 0      !important;
-    position:   relative !important;
+    width:            260px          !important;
+    min-width:        260px          !important;
+    max-width:        260px          !important;
+    transform:        none           !important;   /* block translateX slide-out */
+    visibility:       visible        !important;
+    display:          flex           !important;
+    flex-shrink:      0              !important;
+    position:         relative       !important;
+    background-color: #1a2744        !important;   /* dark navy — must be explicit */
+}
+
+/* Inner content container (Streamlit 1.35+) */
+[data-testid="stSidebarContent"],
+[data-testid="stSidebarUserContent"] {
+    background-color: #1a2744 !important;
+    min-width:        260px   !important;
 }
 
 /* 2. Hide collapse AND expand buttons — no toggle at all */

@@ -68,61 +68,111 @@ def render() -> None:
             f"🔍  {fname}  ·  {doc_type}  ·  Confidence {conf*100:.0f}%  ·  {reason}",
             expanded=False,
         ):
+            from ui.components.field_groups import group_fields, pretty_label
+
+            # Fields live under final["fields"] in the DocumentData schema
+            fields_dict = final.get("fields") or {}
+            line_items  = final.get("line_items") or []
+
             left, right = st.columns([2, 1])
 
+            # ── Left: editable field panel ────────────────────────────────────
             with left:
                 st.markdown("**Review & Edit Extracted Fields**")
-                edited = {}
-                display_keys = ["invoice_number","vendor_name","invoice_date","due_date",
-                                 "total_amount","tax_amount","subtotal","currency","iban","payment_terms"]
-                for k in display_keys:
-                    v = final.get(k)
-                    edited[k] = st.text_input(
-                        k.replace("_", " ").title(),
-                        value=str(v) if v is not None else "",
-                        key=f"{doc_id}_{k}",
+                st.caption("All fields are pre-populated from the AI extraction. "
+                           "Correct any errors before approving.")
+
+                edited_fields: dict = {}
+
+                if fields_dict:
+                    groups = group_fields(fields_dict)
+                    for group_label, gf in groups.items():
+                        st.markdown(f"**{group_label}**")
+                        cols = st.columns(2)
+                        for i, (fkey, fval) in enumerate(gf.items()):
+                            edited_fields[fkey] = cols[i % 2].text_input(
+                                pretty_label(fkey),
+                                value=str(fval) if fval is not None else "",
+                                key=f"rv_{doc_id}_{fkey}",
+                            )
+                        st.markdown(
+                            "<hr style='margin:6px 0;border-color:#e2e8f0'/>",
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.warning(
+                        "No fields were extracted. You can still approve or reject the document."
                     )
 
+                # ── Line items (read-only — shown for context) ────────────────
+                if line_items:
+                    import pandas as pd
+                    st.markdown("**Line Items** *(read-only)*")
+                    st.dataframe(
+                        pd.DataFrame(line_items),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+            # ── Right: summary + action buttons ──────────────────────────────
             with right:
                 st.markdown("**Summary**")
                 st.markdown(f"- **Doc ID:** `{doc_id[:8]}`")
                 st.markdown(f"- **Type:** {doc_type}")
                 st.markdown(
                     f"- **Confidence:** "
-                    f"<span style='color:{'#d97706' if conf>=0.5 else '#dc2626'};font-weight:700'>"
-                    f"{conf*100:.0f}%</span>",
+                    f"<span style='color:{'#d97706' if conf >= 0.5 else '#dc2626'};"
+                    f"font-weight:700'>{conf*100:.0f}%</span>",
                     unsafe_allow_html=True,
                 )
                 st.markdown(f"- **Reason flagged:** {reason}")
+
                 st.markdown("**Processing log:**")
                 for note in notes[-5:]:
                     st.caption(f"• {note}")
 
                 st.markdown("<br/>", unsafe_allow_html=True)
-                timings = json.loads(doc.get("final_data") or "{}").get("timings")
+                timings = final.get("timings")
                 render_latency(notes, timings_dict=timings)
 
                 st.markdown("<br/>", unsafe_allow_html=True)
                 col_a, col_r = st.columns(2)
 
                 with col_a:
-                    if st.button("✅ Approve", key=f"approve_{doc_id}",
+                    if st.button("✅ Approve & Save", key=f"approve_{doc_id}",
                                  use_container_width=True, type="primary"):
                         try:
                             from database.storage import approve_record
-                            # Convert edited strings back to typed values
-                            clean = {}
-                            for k, v in edited.items():
-                                if v.strip() == "" or v == "None":
-                                    clean[k] = None
-                                elif k in ("total_amount","tax_amount","subtotal"):
+
+                            # Convert edited text back to typed values
+                            _amount_keys = {
+                                k for k in edited_fields
+                                if any(w in k for w in
+                                       ("amount","total","subtotal","tax","price",
+                                        "cost","balance","discount","fee","net","gross"))
+                            }
+                            clean_fields: dict = {}
+                            for k, v in edited_fields.items():
+                                v = v.strip()
+                                if v == "" or v.lower() == "none":
+                                    clean_fields[k] = None
+                                elif k in _amount_keys:
                                     try:
-                                        clean[k] = float(v.replace(",","").replace("$",""))
+                                        clean_fields[k] = float(
+                                            v.replace(",", "").replace("$", "")
+                                             .replace("₹", "").replace("€", "")
+                                        )
                                     except ValueError:
-                                        clean[k] = None
+                                        clean_fields[k] = v
                                 else:
-                                    clean[k] = v.strip()
-                            approve_record(doc_id, clean)
+                                    clean_fields[k] = v
+
+                            # Save the full updated final_data (preserves line_items etc.)
+                            updated_final = {
+                                **final,
+                                "fields": clean_fields,
+                            }
+                            approve_record(doc_id, updated_final)
                             st.session_state.approved_ids.add(doc_id)
                             st.toast(f"Document {doc_id[:8]} approved.", icon="✅")
                             st.rerun()
@@ -130,7 +180,8 @@ def render() -> None:
                             st.error(f"Could not approve: {e}")
 
                 with col_r:
-                    if st.button("❌ Reject", key=f"reject_{doc_id}", use_container_width=True):
+                    if st.button("❌ Reject", key=f"reject_{doc_id}",
+                                 use_container_width=True):
                         try:
                             from database.storage import reject_record
                             reject_record(doc_id)

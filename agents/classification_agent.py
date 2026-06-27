@@ -23,14 +23,16 @@ Return ONLY this JSON object, nothing else:
 {"doc_type": "invoice", "confidence": 0.95, "reasoning": "one sentence"}
 
 Valid doc_type values:
-- "invoice"  : formal vendor invoice with invoice number, line items, payment terms
+- "invoice"  : formal vendor invoice such as an Amazon India invoice, B2B Invoice, with invoice number, bill-to name, line items, Date, Price
 - "receipt"  : point-of-sale or purchase receipt (simpler, often from retail)
 - "form"     : structured form such as W-9, expense report, or intake form
 
 Rules:
 - Return ONLY the JSON, no explanation or markdown fences.
-- confidence must be a float between 0.0 and 1.0."""
+- confidence must be a float between 0.0 and 1.0.
+- for unclear images, treat document type = invoice, confidence = 0.5 reasoning = "Default"
 
+"""
 
 class ClassificationResult:
     def __init__(self, doc_type: str, confidence: float, schema_name: str, reasoning: str = ""):
@@ -62,7 +64,7 @@ def _classify_with_gemini(image: Image.Image) -> ClassificationResult:
         model=GEMINI_MODEL,
         contents=[image, _CLASSIFICATION_PROMPT],
         config=types.GenerateContentConfig(
-            max_output_tokens=256,
+            max_output_tokens=500,
             temperature=0.1,
         ),
     )
@@ -79,7 +81,7 @@ def _classify_with_claude(image: Image.Image) -> ClassificationResult:
 
     message = client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=256,
+        max_tokens=500,
         messages=[{
             "role": "user",
             "content": [
